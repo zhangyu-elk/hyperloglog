@@ -12,6 +12,20 @@
 * 一些工具函数
 */
 
+/* debug宏 */
+#ifdef DEBUG
+	#define xprintf(fmt, ...)	printf("FILE:<%s>,FUN:<%s>,LINE:<%d>,"fmt"\n", __FILE__, __FUNCTION__, __LINE__, ##__VA_ARGS__)
+#else
+	#define xprintf(fmt, ...)
+#endif
+
+/* assert宏, assert失败时打印表达式 */
+#define xassert(X) 		if(!(X)){										\
+								xprintf(" (%s) assert fail!", #X);		\
+								assert(0);								\
+							}
+
+
 enum 
 {
 	_Little_endian = 0,
@@ -31,7 +45,6 @@ inline static int byte_order()
 	
 	return (w.b == 1) ? _Little_endian : _Big_endian;
 }
-
 
 
 const uint16_t hll_sparse_max_bytes = 3000;				/*sparse编码方式最大占用空间*/
@@ -240,7 +253,7 @@ static char *invalid_hll_err = "-INVALIDOBJ Corrupted HLL object detected\r\n";
 #define HLL_SPARSE_VAL_VALUE(p) ((((*(p)) >> 2) & 0x1f)+1)
 /*001vvvvv & 值0x00011111 获得中间5位的值即*/
 #define HLL_SPARSE_VAL_LEN(p) (((*(p)) & 0x3)+1)
-/*获得后两位的值, 即长度*/
+/*获得VAL类型长度*/
 #define HLL_SPARSE_VAL_MAX_VALUE 32
 /*spase值5bit最大32*/
 #define HLL_SPARSE_VAL_MAX_LEN 4
@@ -253,6 +266,7 @@ static char *invalid_hll_err = "-INVALIDOBJ Corrupted HLL object detected\r\n";
     *(p) = (((val)-1)<<2|((len)-1))|HLL_SPARSE_VAL_BIT; \
 } while(0)
 /*sparse编码 设置val的值, 同时传入len和val*/
+
 #define HLL_SPARSE_ZERO_SET(p,len) do { \
     *(p) = (len)-1; \
 } while(0)
@@ -262,7 +276,7 @@ static char *invalid_hll_err = "-INVALIDOBJ Corrupted HLL object detected\r\n";
     *(p) = (_l>>8) | HLL_SPARSE_XZERO_BIT; \
     *((p)+1) = (_l&0xff); \
 } while(0)
-/*sparse编码设置zero的长度*/
+/*sparse编码设置xzero的长度*/
 
 #define HLL_ALPHA_INF 0.721347520444481703680 /* constant for 0.5/ln(2)  用来修正的一个宏 */
 
@@ -322,7 +336,7 @@ uint64_t MurmurHash64A (const void * key, int len, unsigned int seed)
 }
 
 /*根据hash算法,计算出index(桶的下标), count(后50的计数值)*/
-int hllPatLen(unsigned char *ele, size_t elesize, long *regp)
+int hllPatLen(const unsigned char *ele, size_t elesize, long *regp)
 {
     uint64_t hash, bit, index;
     int count;
@@ -359,7 +373,7 @@ int hllDenseSet(uint8_t *registers, long index, uint8_t count)
 }
 
 /*往data数据中放入一个新的值*/
-int hllDenseAdd(uint8_t *registers, unsigned char *ele, size_t elesize)
+int hllDenseAdd(uint8_t *registers, const unsigned char *ele, size_t elesize)
 {
     long index;
     uint8_t count = hllPatLen(ele,elesize,&index);
@@ -487,28 +501,38 @@ hllhdr* hllSparseToDense(hllhdr *ptr)
     return hdr;
 }
 
-/* 对于sparse编码方式赋值, 当数据超过3000或者一个VAL超过32 */
-int hllSparseSet(hllhdr *ptr, long index, uint8_t count) 
+/* 对于sparse编码方式赋值, 当数据超过3000或者一个VAL超过32 
+*  由于会进行扩展空间, 所以需要传入指向指针的指针
+*  
+*/
+int hllSparseSet(hllhdr **ptr, long index, uint8_t count) 
 {
+	hllhdr *hdr = *ptr;
     uint8_t oldcount, *sparse, *end, *p, *prev, *next;
     long first, span;
     long is_zero = 0, is_xzero = 0, is_val = 0, runlen = 0;
 
     if (count > HLL_SPARSE_VAL_MAX_VALUE) goto promote;
 
-    ptr = (hllhdr*)sdsMakeRoomFor(ptr, 3);
+	hdr = (hllhdr*)sdsMakeRoomFor(hdr, 3);
 	/* 一次最多可能扩展3个字节, 先一步分配空间 */
+	if(!hdr)
+	{
+		xprintf("memory rellac error: %s!", sterrror(errno));
+		return -1;
+	}
 
 	
 	/* 第一步需要找到将要更改的那个数据(zero xzero val) */
-    sparse = p = ((uint8_t*)ptr) + HLL_HDR_SIZE;
-    end = p + sdslen(ptr) - HLL_HDR_SIZE;
+    sparse = p = ((uint8_t*)hdr) + HLL_HDR_SIZE;
+    end = p + sdslen(hdr) - HLL_HDR_SIZE;
 
     first = 0;
-    prev = NULL; /* Points to previous opcode at the end of the loop. */
-    next = NULL; /* Points to the next opcode at the end of the loop. */
+    prev = NULL; 
+    next = NULL; 
     span = 0;
-    while(p < end) {
+    while(p < end)
+	{
         long oplen;
 
         oplen = 1;
@@ -526,15 +550,14 @@ int hllSparseSet(hllhdr *ptr, long index, uint8_t count)
             oplen = 2;
         }
 
-        if (index <= first+span-1) break;
+        if (index <= first + span - 1) break;
         prev = p;
         p += oplen;
         first += span;
-		/* first指向前一个数据段 */
     }
-    if (span == 0) return -1; /* Invalid format. */
+    if (span == 0) return -1; 
 
-    next = HLL_SPARSE_IS_XZERO(p) ? p+2 : p+1;
+    next = HLL_SPARSE_IS_XZERO(p) ? (p + 2) : (p + 1);
     if (next >= end) next = NULL;
 
     if (HLL_SPARSE_IS_ZERO(p)) 
@@ -559,10 +582,8 @@ int hllSparseSet(hllhdr *ptr, long index, uint8_t count)
     if (is_val)
 	{
         oldcount = HLL_SPARSE_VAL_VALUE(p);
-        /* Case A. */
         if (oldcount >= count) return 0;
 
-        /* Case B. */
         if (runlen == 1)
 		{
             HLL_SPARSE_VAL_SET(p,count,1);
@@ -574,7 +595,6 @@ int hllSparseSet(hllhdr *ptr, long index, uint8_t count)
 	*/
 
 	
-	/*也是一种简单的情况*/
     if (is_zero && runlen == 1)
 	{
         HLL_SPARSE_VAL_SET(p,count,1);
@@ -585,7 +605,6 @@ int hllSparseSet(hllhdr *ptr, long index, uint8_t count)
 	/*更可能的情况,需要拆分移动数据*/
     uint8_t seq[5], *n = seq;
     int last = first+span-1; 
-	/*需要更新的那一个数据*/
     int len;
 
     if (is_zero || is_xzero)
@@ -594,7 +613,6 @@ int hllSparseSet(hllhdr *ptr, long index, uint8_t count)
         if (index != first)
 		{
             len = index-first;
-			/*在该数据中,应该插入地方之前的值*/
             if (len > HLL_SPARSE_ZERO_MAX_LEN)
 			{
                 HLL_SPARSE_XZERO_SET(n,len);
@@ -650,9 +668,9 @@ int hllSparseSet(hllhdr *ptr, long index, uint8_t count)
      int deltalen = seqlen-oldlen;
 
      if (deltalen > 0 &&
-         sdslen(ptr)+deltalen > hll_sparse_max_bytes) goto promote;
+         sdslen(hdr)+deltalen > hll_sparse_max_bytes) goto promote;
      if (deltalen && next) memmove(next+deltalen,next,end-next);
-     sdsIncrLen(ptr,deltalen);
+     sdsIncrLen(hdr,deltalen);
      memcpy(p, seq, seqlen);
      end += deltalen;
 
@@ -672,7 +690,7 @@ updated:
             p++;
             continue;
         }
-        if (p+1 < end && HLL_SPARSE_IS_VAL(p+1))
+        if (p + 1 < end && HLL_SPARSE_IS_VAL(p+1))
 		{
             int v1 = HLL_SPARSE_VAL_VALUE(p);
             int v2 = HLL_SPARSE_VAL_VALUE(p+1);
@@ -683,7 +701,7 @@ updated:
 				{
                     HLL_SPARSE_VAL_SET(p+1,v1,len);
                     memmove(p, p+1, end-p);
-                    sdsIncrLen(ptr, -1);
+                    sdsIncrLen(hdr, -1);
                     end--;
                     continue;
                 }
@@ -692,22 +710,24 @@ updated:
         p++;
     }
 
-    HLL_INVALIDATE_CACHE(ptr);
+    HLL_INVALIDATE_CACHE(hdr);
+	*ptr = hdr;
     return 1;
 
 promote: 
-    if((ptr = hllSparseToDense(ptr)) == NULL) return -1; /* 更新编码 */
+    if((hdr = hllSparseToDense(hdr)) == NULL) return -1; /* 更新编码 */
 
-    int dense_retval = hllDenseSet(ptr->registers, index, count);
+    int dense_retval = hllDenseSet(hdr->registers, index, count);
     assert(dense_retval == 1);
+	*ptr = hdr;
     return dense_retval;
 }
 
 
-int hllSparseAdd(hllhdr *ptr, unsigned char *ele, size_t elesize)
+int hllSparseAdd(hllhdr **ptr, const unsigned char *ele, size_t elesize)
 {
     long index;
-    uint8_t count = hllPatLen(ele,elesize,&index);
+    uint8_t count = hllPatLen(ele, elesize, &index);
     return hllSparseSet(ptr,index,count);
 }
 
@@ -857,16 +877,20 @@ uint64_t hllCount(struct hllhdr *hdr, int *invalid) {
     return (uint64_t) E;
 }
 
-/*根据编码方式进行添加*/
-int hllAdd(hllhdr *ptr, unsigned char *ele, size_t elesize)
+/*根据编码方式进行添加
+* @return 1 表示进行了修改
+* @return 0 表示未进行修改
+* @return -1 表示发生错误
+*/
+int hllAdd(hllhdr **ptr, const unsigned char *ele, size_t elesize)
 {
-    switch(ptr->encoding)
+    switch((*ptr)->encoding)
 	{
     case HLL_DENSE: 
 		{
-			if(hllDenseAdd(ptr->registers,ele,elesize))
+			if(hllDenseAdd((*ptr)->registers,ele,elesize))
 			{
-				HLL_INVALIDATE_CACHE(ptr);
+				HLL_INVALIDATE_CACHE(*ptr);
 				return 1;
 			}
 			return 0;
@@ -884,7 +908,7 @@ int hllAdd(hllhdr *ptr, unsigned char *ele, size_t elesize)
 int hllMerge(uint8_t *max, hllhdr *ptr)
 {
     int i;
-
+	
     if (ptr->encoding == HLL_DENSE)
 	{
         uint8_t val;
@@ -993,16 +1017,16 @@ invalid:
 }
 
 /*add命令*/
-int pfaddCommand(hllhdr *ptr, unsigned char *key, int len)
+int pfaddCommand(hllhdr **ptr, const unsigned char *key, int len)
 {
-	if(len > 0)
+	if(!ptr || !*ptr || !key)
 	{
-		return hllAdd(ptr, key, len);
+		return -1;
 	}
-	else
-	{
-		return hllAdd(ptr, key, strlen(key));
-	}
+	
+	len = (len > 0) ? len : strlen(key);
+	return hllAdd(ptr, key, len);
+		
 }
 
 
@@ -1044,16 +1068,20 @@ int pfcountCommand(hllhdr *hdr, uint64_t *ret)
 
 
 /* 合并两个hllhdr结构, 合并多个的情况应该很少见 */
-int pfmergeCommand(hllhdr *dest, hllhdr *src)
+int pfmergeCommand(hllhdr **hdr, hllhdr *src)
 {
     uint8_t max[HLL_REGISTERS];
-    struct hllhdr *hdr = dest;
     int j;
     int use_dense = 0; 
 
+	if(!hdr || !*hdr || !src)
+	{
+		return -1;
+	}
+
     memset(max,0,sizeof(max));
 	
-	if (hdr->encoding == HLL_DENSE) use_dense = 1;
+	if ((*hdr)->encoding == HLL_DENSE) use_dense = 1;
 	
 	if(hllMerge(max, src))
 	{
@@ -1064,7 +1092,7 @@ int pfmergeCommand(hllhdr *dest, hllhdr *src)
 	{
 		if(use_dense)
 		{
-			hllDenseSet(hdr->registers, j, max[j]);
+			hllDenseSet((*hdr)->registers, j, max[j]);
 		}
 		else
 		{
@@ -1072,7 +1100,8 @@ int pfmergeCommand(hllhdr *dest, hllhdr *src)
 		}
 	}
 	
-	HLL_INVALIDATE_CACHE(hdr);
+	HLL_INVALIDATE_CACHE(*hdr);
+	return 0;
 }
 
 

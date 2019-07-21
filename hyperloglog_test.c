@@ -17,7 +17,7 @@ int main()
 		char buff[16] = { 0 };
 		uint64_t ret = 0;
 		snprintf(buff, 15, "%d", i);
-		pfaddCommand(hdr, buff, 3);
+		pfaddCommand(&hdr, buff, 3);
 		pfcountCommand(hdr, &ret);
 		printf("insert: %d, count: %ld\n", i, ret);
 	}
@@ -30,7 +30,7 @@ int main()
 		char buff[16] = { 0 };
 		uint64_t ret = 0;
 		snprintf(buff, 15, "%d", i);
-		pfaddCommand(hdr, buff, 3);
+		pfaddCommand(&hdr, buff, 3);
 		pfcountCommand(hdr, &ret);
 		printf("insert: %d, count: %ld\n", i, ret);
 	}
@@ -41,7 +41,7 @@ int main()
 		char buff[16] = { 0 };
 		uint64_t ret = 0;
 		snprintf(buff, 15, "%d", i);
-		pfaddCommand(hdr, buff, 3);
+		pfaddCommand(&hdr, buff, 3);
 		pfcountCommand(hdr, &ret);
 		printf("insert: %d, count: %ld\n", i, ret);
 	}
